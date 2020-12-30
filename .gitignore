@@ -1,2 +1,7 @@
 /interim_image
 /__pycache__
+/last_path.json
+*.gitignore
+/build
+/dist
+*.spec

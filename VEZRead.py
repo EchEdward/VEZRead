@@ -3,16 +3,19 @@
 #pyi-makespec --onefile --icon=icon.ico --noconsole VEZRead.py
 from PyQt5.QtWidgets import QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,\
     QScrollArea,QSizePolicy, QTableWidgetItem,QSplitter, QFrame, QSizePolicy, QListView, QTableWidget, qApp, QAction,\
-     QMessageBox,QFileDialog, QErrorMessage, QDoubleSpinBox, QSpacerItem, QLineEdit, QItemDelegate 
+     QMessageBox,QFileDialog, QErrorMessage, QDoubleSpinBox, QSpacerItem, QLineEdit, QItemDelegate, QProgressBar
 from PyQt5.QtGui import QPixmap, QPalette, QBrush, QImage, QIcon, QTransform, QStandardItemModel,QStandardItem,\
-     QDoubleValidator, QValidator, QCloseEvent
-from PyQt5.QtCore import QPersistentModelIndex, Qt,  QSize, QModelIndex
+     QDoubleValidator, QValidator, QCloseEvent, QColor
+from PyQt5.QtCore import QPersistentModelIndex, Qt,  QSize, QModelIndex, QThread, pyqtSignal
 from PyQt5 import uic
+from threading import Thread, Event
 import sys
 import os
 import copy 
 import win32api
 from docx import Document
+from functools import partial
+import json
 #from PIL import Image
 
 import imagescan
@@ -207,6 +210,36 @@ class CustomTable(QTableWidget):
         if self.Trig:
             self.metod()
         QTableWidget.closeEditor(self, editor, hint)
+
+    
+
+
+
+class Calc_Tread(QThread):
+    mysignal = pyqtSignal(str)
+    def __init__(self, arr, st_arr, file_path, parent=None):
+        QThread.__init__(self, parent)
+        self.file_path = file_path
+        self.st_arr = st_arr
+        self.arr = arr
+
+    def run(self):
+        self.mysignal.emit("Start")
+        for i in range(len(self.file_path)):
+            arr, st_arr = imagescan.Scan(self.file_path[i])
+            #print("trtr", self.file_path[i], imagescan.common_state(st_arr))
+            self.arr[i] = arr
+            self.st_arr[i] = st_arr
+            a = imagescan.common_state(st_arr)
+            self.mysignal.emit(f"Work_iter_{i}_color_{a}")
+        self.mysignal.emit("End")
+            
+    # остановка потока
+    def stop( self ):
+        print('stop')
+        self.terminate()
+        self.wait()
+        return 'stop'
         
 
         
@@ -235,6 +268,33 @@ class MyWindow(QMainWindow):
                     os.mkdir(curren_dir)
                 except OSError:
                     print ("Error generate dir "+curren_dir)
+
+        # Load last path for files
+        try: 
+            with open('last_path.json', "r" ) as f:
+                path_dict = {i:j for i,j in json.load(f).items()}
+            self.path_image = path_dict["path_image"]
+            self.path_dir_images = path_dict["path_dir_images"]
+            self.path_dir_dirs = path_dict["path_dir_dirs"]
+            self.path_excel = path_dict["path_excel"]
+            self.path_excels = path_dict["path_excels"]
+            self.path_vez_excel = path_dict["path_vez_excel"]
+            self.path_ro_excel = path_dict["path_ro_excel"]
+            self.path_ro_word = path_dict["path_ro_word"]
+        except Exception:
+            self.path_image = self.path_home
+            self.path_dir_images = self.path_home
+            self.path_dir_dirs = self.path_home
+            self.path_excel = self.path_home
+            self.path_excels = self.path_home
+            self.path_vez_excel = self.path_home
+            self.path_ro_excel = self.path_home
+            self.path_ro_word = self.path_home
+            
+            
+            
+
+            
 
         self.lv_c = 5
         self.t_c = 0.5
@@ -275,17 +335,24 @@ class MyWindow(QMainWindow):
 
         self.listView = CustomList()#QListView()
         self.listView.clicked.connect(self.OpenPict)
+        self.select_able = True
         self.listView.setcloseEditorSignal(self.Rename)
         #self.listView.editingFinished.connect(self.Rename)
         #self.listView.edit.connect(self.Rename)
         
 
-        BoxLayout1 = QHBoxLayout()
+        BoxLayout1 = QVBoxLayout()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setAlignment(Qt.AlignHCenter)
+        BoxLayout1.addWidget(self.progress_bar)
         BoxLayout1.addWidget(self.listView)
+        
         SPFrame.setLayout(BoxLayout1) 
 
         self.Table = CustomTable()#QTableWidget()
-        self.Table.setcloseEditorSignal(self.WriteTable)
+        self.Table.setcloseEditorSignal(lambda:self.WriteTable(who_edited = "table"))
+        #self.Table.itemChanged(lambda:print("change2"))
+        self.Table.cellClicked[int,int].connect(self.PosChangedCell)
         self.Table.setColumnCount(3)
         self.Table.setHorizontalHeaderLabels(["p", "h", "d"])
         self.Table.setRowCount(30)
@@ -533,6 +600,7 @@ class MyWindow(QMainWindow):
         self.file_path = []
         self.file_name = []
         self.arr = []
+        self.stst = []
         self.arr_lv = []
         self.arr_t = []
         self.adres = None
@@ -542,9 +610,14 @@ class MyWindow(QMainWindow):
 
         self.sel = True
         self.block = True
+        self.back_colors = ((255,255,255,255),(255, 0, 0, 50),(255, 255, 0, 50),(0, 255, 0, 50))
+
+        self.pos_changed_cell = (0,0)
 
         #self.NewPick()
-        
+
+    def PosChangedCell(self, i,j):
+        self.pos_changed_cell = (i,j)
         
 
     def Zap(self):
@@ -565,7 +638,7 @@ class MyWindow(QMainWindow):
 
     def Op0(self):
         try:
-            p=QFileDialog.getOpenFileNames(self, 'Открыть файлы', self.path_home, "*.png *.jpg *.bmp") 
+            p=QFileDialog.getOpenFileNames(self, 'Открыть файлы', self.path_image, "*.png *.jpg *.bmp") 
             if p==([], ''): raise Exception("string index out of range")
             self.file_path = []
             self.file_name = []
@@ -575,8 +648,13 @@ class MyWindow(QMainWindow):
                 self.file_name.append(fname)
             self.Zap()
             self.arr =[None for j in self.file_name]
+            self.stst=[None for j in self.file_name]
             self.arr_lv = [self.lv_c for j in self.file_name]
             self.arr_t = [self.t_c for j in self.file_name]
+
+            self.path_image = os.path.dirname(p[0][0])
+
+            self.Run_Tread()
    
         except Exception as ex:
             if str(ex) != "string index out of range":
@@ -584,22 +662,62 @@ class MyWindow(QMainWindow):
                 ems.setWindowTitle('Возникла ошибка')
                 ems.showMessage('При открытии возникла ошибка ('+str(ex)+').')
 
+    def Tread_signal_handler(self,signal):
+        if signal[:5] == "Start":
+            self.select_able = False
+        elif signal[:4] == "Work":
+            a = signal.index("iter_")
+            b = signal.index("color_")
+            i = int(signal[a+5:b-1])
+            color = int(signal[b+6:])
+            self.progress_bar.setValue(i)
+            self.sp_m[i].setBackground(QBrush(QColor(*self.back_colors[color])))
+        elif signal[:3] == "End":
+            self.select_able = True  
+            self.progress_bar.reset() 
+        #self.sp_m[i].setData(self.sp_m[i].data())
+        #self.listView.dataChanged(self.sp_m[i].index(),self.sp_m[i].index())
+        #self.sp_m[i].setText("aaaa")
+        
+    def Run_Tread(self):  
+        self.progress_bar.setRange(0,len(self.file_path))
+            
+        self.potokRasch = Calc_Tread(self.arr,self.stst,self.file_path)
+        self.potokRasch.mysignal.connect(self.Tread_signal_handler, Qt.QueuedConnection)
+
+        if not self.potokRasch.isRunning():
+            self.potokRasch.start() 
 
     #QFileDialog.getSaveFileName
     def Op12(self,n):
         try:
             p=""
-            p = QFileDialog.getExistingDirectory(self, 'Открыть папку', self.path_home) # Обрати внимание на последний элемент
+            p = QFileDialog.getExistingDirectory(self, 'Открыть папку', self.path_dir_dirs if n==1 else self.path_dir_images)
             if p=="": raise Exception("string index out of range")
             if n==1:
                 self.file_path, self.file_name = self.Files(p,n,namef=self.ImageName.text())
+                self.path_dir_dirs = p
             else:
                 self.file_path, self.file_name = self.Files(p,n)
+                self.path_dir_images = p
             #print(self.file_path)
             self.Zap()
             self.arr =[None for j in self.file_name]
+            self.stst =[None for j in self.file_name] ##
             self.arr_lv = [self.lv_c for j in self.file_name]
             self.arr_t = [self.t_c for j in self.file_name]
+
+
+            self.Run_Tread()
+
+
+            """ def ClosePotok(self):
+
+                self.potokRasch.stop()
+                self.potokRasch.mysignal.disconnect()
+                del self.potokRasch """
+
+
         except Exception as ex:
             if str(ex) != "string index out of range":
                 ems = QErrorMessage(self)
@@ -608,21 +726,33 @@ class MyWindow(QMainWindow):
 
     def Op3(self):
         try:
-            p=QFileDialog.getOpenFileNames(self, 'Открыть файлы', self.path_home, "*.xlsx *.xls") 
+            p=QFileDialog.getOpenFileNames(self, 'Открыть файлы', self.path_excel, "*.xlsx *.xls") 
             if p==([], ''): raise Exception("string index out of range")
             self.file_path = []
             self.file_name = []
             self.arr_lv = []
             self.arr_t = []
             self.arr =[]
+
             for i in p[0]:
                 N, nam, lv, t = xlsx.OpenFile(i)
                 self.arr+=N
+                self.stst += [imagescan.define_state(a) for a in N]
                 self.file_name+=nam 
                 self.file_path+=[None for j in nam] 
                 self.arr_lv+=[j if j!= None else self.lv_c for j in lv]
                 self.arr_t+=[j if j!= None else self.t_c for j in t]
+
+            
+            
+            
+            self.path_excel = os.path.dirname(p[0][0])
+            
             self.Zap()
+
+            for i in range(len(self.arr)):
+                color = imagescan.common_state(self.stst[i])
+                self.sp_m[i].setBackground(QBrush(QColor(*self.back_colors[color])))
             
         except Exception as ex:
             if str(ex) != "string index out of range":
@@ -633,7 +763,7 @@ class MyWindow(QMainWindow):
     def Op4(self):
         try:
             p=""
-            p = QFileDialog.getExistingDirectory(self, 'Открыть папку', self.path_home) # Обрати внимание на последний элемент
+            p = QFileDialog.getExistingDirectory(self, 'Открыть папку', self.path_excels) # Обрати внимание на последний элемент
             if p=="": raise Exception("string index out of range")
             file_path, n = self.Files(p,2)
             self.file_path = []
@@ -644,12 +774,19 @@ class MyWindow(QMainWindow):
             for  i in file_path:
                 N, nam, lv, t = xlsx.OpenFile(i)
                 self.arr+=N
+                self.stst += [imagescan.define_state(a) for a in N]
                 self.file_name+=nam 
                 self.file_path+=[None for j in nam]
                 self.arr_lv+=[j if j!= None else self.lv_c for j in lv]
                 self.arr_t+=[j if j!= None else self.t_c for j in t]
 
+            self.path_excels = p
+
             self.Zap()
+
+            for i in range(len(self.arr)):
+                color = imagescan.common_state(self.stst[i])
+                self.sp_m[i].setBackground(QBrush(QColor(*self.back_colors[color])))
         except Exception as ex:
             if str(ex) != "string index out of range":
                 ems = QErrorMessage(self)
@@ -686,49 +823,81 @@ class MyWindow(QMainWindow):
     
         return p, n
 
+
+
+
     def OpenPict(self,modelindex):
-        modelindex=QPersistentModelIndex(modelindex)
-        ind = self.d[modelindex]
-        self.PaintForm.Update(self.ImFrame.size())
-        p = self.file_path[ind]
-        if p != None:
-            self.PaintForm.open(p)
-            if self.arr[ind] == None:
-                try:
-                    arr = imagescan.Scan(p)
-                except Exception:
-                    arr = None
-                self.arr[ind] = arr
+        if self.select_able:
+            modelindex=QPersistentModelIndex(modelindex)
+            ind = self.d[modelindex]
+            #print(self.arr[ind])
+            self.PaintForm.Update(self.ImFrame.size())
+            p = self.file_path[ind]
+            
+            if p != None:
+                self.PaintForm.open(p)
+                if self.arr[ind] == None:
+                    try:
+                        arr, st_arr = imagescan.Scan(p)
+                    except Exception:
+                        arr = None
+                        st_arr = None
+                    self.arr[ind] = arr
+                    self.stst[ind] = st_arr
+                else:
+                    arr = self.arr[ind]
+                    stst = self.stst[ind]
             else:
+                self.PaintForm.open("images\\image_error_full.png")
                 arr = self.arr[ind]
-        else:
-            self.PaintForm.open("images\\image_error_full.png")
-            arr = self.arr[ind]
-        
-        self.block = False
-        self.vl.setValue(self.arr_lv[ind])
-        self.t.setValue(self.arr_t[ind])
-        self.block = True
-        self.WriteArrTable(arr)
+                stst = self.stst[ind]
+            
+            ScrollBar = self.PaintForm.scrollArea.horizontalScrollBar()
+            ScrollBar.setValue(ScrollBar.maximum())
+            
+            
+            self.block = False
+            self.vl.setValue(self.arr_lv[ind])
+            self.t.setValue(self.arr_t[ind])
+            self.block = True
+            #print(self.arr[ind])
+            #print("-"*10)
+            
+            self.WriteArrTable(arr,stst = stst)
+            
 
-        try:
-            pe1,pe2,pe = roo.RschRoo(arr,self.vl.value(),self.t.value())
-            self.pe1_le.setText(str(round(pe1,2))+" Ом")
-            self.pe2_le.setText(str(round(pe2,2))+" Ом")
-            self.pe_le.setText(str(round(pe,2))+" Ом")
-        except Exception:
-            self.pe1_le.setText("")
-            self.pe2_le.setText("")
-            self.pe_le.setText("")
 
-    def WriteArrTable(self,arr):
+            try:
+                pe1,pe2,pe = roo.RschRoo(arr,self.vl.value(),self.t.value())
+                self.pe1_le.setText(str(round(pe1,2))+" Ом")
+                self.pe2_le.setText(str(round(pe2,2))+" Ом")
+                self.pe_le.setText(str(round(pe,2))+" Ом")
+            except Exception:
+                self.pe1_le.setText("")
+                self.pe2_le.setText("")
+                self.pe_le.setText("")
+
+    def WriteArrTable(self,arr, stst = None):
         try:
             self.Table.setRowCount(0)
             self.Table.setRowCount(30 if 30>len(arr) else len(arr) )
+            #print(arr, stst)
             for i in range(len(arr)):
                 for j in range(3):
-                    self.Table.setItem(i, j, QTableWidgetItem(str(arr[i][j])))
-        except Exception:
+                    a = QTableWidgetItem(str(arr[i][j]))
+                    self.Table.setItem(i, j, a)
+            #print("trtrt",stst)
+            for i in range(len(stst)):
+                for j in range(3):
+                    tb_item = self.Table.item(i,j)
+                    if stst is not None:
+                        if tb_item is None:
+                            tb_item = QTableWidgetItem("")
+                            self.Table.setItem(i,j,tb_item)
+                        tb_item.setBackground(QBrush(QColor(*self.back_colors[stst[i][j][0]])))
+                        
+        except Exception as ex:
+            print(ex)
             self.Table.setRowCount(0)
             self.Table.setRowCount(30)
 
@@ -737,16 +906,15 @@ class MyWindow(QMainWindow):
         self.PaintForm.Update(self.ImFrame.size())
 
     def ReadTable(self):
-        i=0
+        b=0
+        c = ("","","")
         N = []
-        while True:
+        for i in range(30):
             try:
-                t = self.Table.item(i,0).text()==""
+                a1 = self.Table.item(i,0).text().replace(",",".")
+                a1 = float(a1) if a1 !='' else a1
             except Exception:
-                t = True
-            if t: break
-            a1 = self.Table.item(i,0).text().replace(",",".")
-            a1 = float(a1) if a1 !='' else a1
+                a1 =""
             try:
                 a2 = self.Table.item(i,1).text().replace(",",".")
                 a2 = float(a2) if a2 !='' else a2
@@ -758,8 +926,14 @@ class MyWindow(QMainWindow):
             except Exception:
                 a3=""
             N.append([a1,a2,a3])
-            i+=1
-        return N
+            if str(a1)+str(a2)+str(a3) != "":
+                b = i
+                c = (a1,a2,a3)
+
+        if str(c[0]) != "" and str(c[1]) != "":
+            return N[:b+2]
+        else:
+            return N[:b+1]
         
     def NewPick(self):
         self.sp_m.append(QStandardItem(QIcon('images\\op1.png'),"Точка"))
@@ -773,6 +947,7 @@ class MyWindow(QMainWindow):
         self.file_name.append("Точка")
         self.file_path.append(None)
         self.arr.append([])
+        self.stst.append([])
         self.arr_lv.append(self.lv_c)
         self.arr_t.append(self.t_c)
 
@@ -796,15 +971,45 @@ class MyWindow(QMainWindow):
             self.file_name[ind] =self.ski.itemFromIndex(modelindex).text()
         except Exception as ex:
             print(ex)
+    
+    def set_table_color(self,ind):
+        for i in range(len(self.stst[ind])):
+            for j in range(3):
+                #print(self.stst[ind][i][j])
+                tb_item = self.Table.item(i,j)
+                if tb_item is None:
+                    tb_item = QTableWidgetItem("")
+                    self.Table.setItem(i,j,tb_item)
+                tb_item.setBackground(QBrush(QColor(*self.back_colors[self.stst[ind][i][j][0]])))
+        for i in range(len(self.stst[ind]),30):
+            for j in range(3):
+                #print(self.stst[ind][i][j])
+                tb_item = self.Table.item(i,j)
+                if tb_item is not None:
+                    tb_item.setBackground(QBrush(QColor(*self.back_colors[0])))
 
-    def WriteTable(self):
+    def WriteTable(self, who_edited = None):
         if self.block:
             arr = self.ReadTable()
+            #print(arr)
+            stst = imagescan.define_state(arr)
+            
             if self.adres != None:
                 ind = self.d[self.adres]
                 self.arr[ind] = arr
+                new_stst = imagescan.new_state(self.stst[ind],stst,*self.pos_changed_cell)
+                self.stst[ind] = new_stst
                 self.arr_lv[ind] = self.vl.value()
                 self.arr_t[ind] = self.t.value()
+
+            if who_edited == "table":
+                i,j = self.pos_changed_cell               
+                
+                self.set_table_color(ind)
+                color = imagescan.common_state(self.stst[ind])
+                self.sp_m[ind].setBackground(QBrush(QColor(*self.back_colors[color])))
+                #print("change1", i,j)
+                
             try:
                 pe1,pe2,pe = roo.RschRoo(arr,self.vl.value(),self.t.value())
                 self.pe1_le.setText(str(round(pe1,2))+" Ом")
@@ -814,6 +1019,7 @@ class MyWindow(QMainWindow):
                 self.pe1_le.setText("")
                 self.pe2_le.setText("")
                 self.pe_le.setText("")
+        
     
     def ReReadImage(self):
         if self.adres != None:
@@ -821,10 +1027,13 @@ class MyWindow(QMainWindow):
             p = self.file_path[ind]
             if p != None:
                 try:
-                    arr = imagescan.Scan(p)
+                    arr, st_arr = imagescan.Scan(p)
                     self.arr[ind] = arr
-                    self.WriteArrTable(arr)
+                    self.stst[ind] = st_arr
+                    self.WriteArrTable(arr,stst = st_arr)
                     self.WriteTable()
+                    color = imagescan.common_state(self.stst[ind])
+                    self.sp_m[ind].setBackground(QBrush(QColor(*self.back_colors[color])))
                 except Exception:
                     1
     
@@ -878,8 +1087,9 @@ class MyWindow(QMainWindow):
         Pe1 = []
         Pe2 = []
         Pe =[]
+        current_path = {1:self.path_vez_excel,2:self.path_ro_excel,3:self.path_ro_word}[trig]
         try:
-            fname = QFileDialog.getSaveFileName(self, 'Сохранить файл', self.path_home,'*.xlsx;;*.xls' if trig !=3 else '*.docx')[0] # Обрати внимание на последний элемент
+            fname = QFileDialog.getSaveFileName(self, 'Сохранить файл', current_path,'*.xlsx;;*.xls' if trig !=3 else '*.docx')[0] # Обрати внимание на последний элемент
             while self.ski.item(i):
                 item = self.ski.item(i)
                 if item.checkState():
@@ -890,7 +1100,7 @@ class MyWindow(QMainWindow):
                     if p != None:
                         if self.arr[ind] == None:
                             try:
-                                arr = imagescan.Scan(p)
+                                arr, st_arr = imagescan.Scan(p)
                             except Exception:
                                 arr = None
                         else:
@@ -918,12 +1128,18 @@ class MyWindow(QMainWindow):
                                 Pe.append(round(pe,2))
 
                 i+=1
+
+            
             if trig==1:
+                if fname !="": self.path_vez_excel = os.path.dirname(fname)
                 xlsx.SaveFile1(fname,nm,N,lv,t)
             elif trig==2:
+                if fname !="": self.path_ro_excel = os.path.dirname(fname)
                 xlsx.SaveFile2(fname,nm,Pe1,Pe2,Pe,lv,t)
             elif trig==3:
+                if fname !="": self.path_ro_word = os.path.dirname(fname)
                 Word.Word(fname,nm,Pe,lv,t,self.NPrj.text(),self.NVL.text())
+
         
         except Exception as ex:
             if str(ex) != "string index out of range":
@@ -950,6 +1166,17 @@ class MyWindow(QMainWindow):
         #Message.addButton('Сохранить', QMessageBox.ActionRole)
         reply = Message.exec()
         if reply == 0:
+            # Save last path for files
+            with open( 'last_path.json', "w", encoding="utf8") as f:
+                json.dump({"path_image":self.path_image,
+                             "path_dir_images":self.path_dir_images,
+                             "path_dir_dirs":self.path_dir_dirs,
+                             "path_excel":self.path_excel,
+                             "path_excels":self.path_excels,
+                             "path_vez_excel":self.path_vez_excel,
+                             "path_ro_excel":self.path_ro_excel,
+                             "path_ro_word":self.path_ro_word},f, indent=4)
+  
             qApp.quit()
         elif reply == 1:
             event.ignore()
