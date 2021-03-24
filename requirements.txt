@@ -1,0 +1,11 @@
+numpy==1.15.0rc1+mkl
+pytesseract==0.3.6
+PyQt5==5.9
+Pillow==8.1.1
+openpyxl==2.4.8
+python-docx==0.8.6
+docxtpl==0.3.9
+
+
+
+
